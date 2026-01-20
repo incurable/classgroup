@@ -73,6 +73,7 @@
   // ============================================
 
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  window.sb = sb;
 
   const authMsg = document.getElementById('authMsg');
   const msg = document.getElementById('msg');
