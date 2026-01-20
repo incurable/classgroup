@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>教师端 - 分组管理</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Noto Sans SC",sans-serif;margin:0;background:#f6f7fb;color:#222;}
+    .container{max-width:960px;margin:0 auto;padding:24px;}
+    .card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);margin-bottom:16px;}
+    h1{font-size:22px;margin:0 0 12px;}
+    label{display:block;font-weight:600;margin:12px 0 6px;}
+    input,button{padding:10px 12px;border-radius:8px;border:1px solid #d9d9d9;font-size:14px;}
+    button{background:#2563eb;color:white;border:none;cursor:pointer;margin-right:8px;}
+    .msg{margin-top:12px;padding:10px;border-radius:8px;}
+    .ok{background:#ecfdf3;color:#0f5132;border:1px solid #b7f0c2;}
+    .err{background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca;}
+    table{width:100%;border-collapse:collapse;margin-top:10px;}
+    th,td{border-bottom:1px solid #eee;text-align:left;padding:8px;font-size:13px;}
+    .groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;}
+    .group{border:1px solid #eee;border-radius:8px;padding:10px;background:#fafafa;}
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>教师端 - 分组管理</h1>
+    <label>管理员邮箱</label>
+    <input id="email" type="email" placeholder="请输入邮箱"/>
+    <label>管理员密码</label>
+    <input id="password" type="password" placeholder="请输入密码"/>
+    <button id="loginBtn">登录</button>
+    <button id="logoutBtn">退出</button>
+    <div id="authMsg"></div>
+  </div>
+
+  <div class="card">
+    <label>导入学生名单 CSV</label>
+    <input id="csvFile" type="file" accept=".csv"/>
+    <button id="importBtn">覆盖导入</button>
+    <div class="help">CSV 格式：student_id,name</div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <button id="refreshBtn">刷新概览</button>
+    <button id="generateBtn">生成分组</button>
+    <button id="downloadBtn">下载结果 CSV</button>
+    <div id="summary"></div>
+  </div>
+
+  <div class="card">
+    <h2>学生名单</h2>
+    <table id="rosterTable"></table>
+  </div>
+
+  <div class="card">
+    <h2>最新分组结果</h2>
+    <div id="groups"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  // ====== 配置（请替换为你的 Supabase 项目）======
+  const SUPABASE_URL = "https://nwkivcfrgvesaedjqver.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im53a2l2Y2ZyZ3Zlc2FlZGpxdmVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4OTE5ODMsImV4cCI6MjA4NDQ2Nzk4M30.yR5vOeps3hxmLh0DIsMXxdy6zgYBgKoSkMPy4vM4w1o";
+  const FUNCTIONS_BASE = "https://nwkivcfrgvesaedjqver.functions.supabase.co";
+  // ============================================
+
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const authMsg = document.getElementById('authMsg');
+  const msg = document.getElementById('msg');
+  const summary = document.getElementById('summary');
+  const rosterTable = document.getElementById('rosterTable');
+  const groupsDiv = document.getElementById('groups');
+
+  function showMsg(el, text, ok=true){
+    el.className = 'msg ' + (ok?'ok':'err');
+    el.textContent = text;
+  }
+
+  async function getAccessToken(){
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || "";
+  }
+
+  async function fetchAdmin(url, options = {}){
+    const token = await getAccessToken();
+    if (!token) throw new Error('请先登录');
+    options.headers = Object.assign({}, options.headers || {}, {
+      "Authorization": "Bearer " + token,
+      "Content-Type": "application/json"
+    });
+    const res = await fetch(url, options);
+    const data = await res.json().catch(()=> ({}));
+    if (!res.ok) throw new Error(data.error || '请求失败');
+    return data;
+  }
+
+  function parseCSV(text){
+    const rows = [];
+    let i = 0, field = '', row = [], inQuotes = false;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === '"') {
+        if (inQuotes && text[i+1] === '"') { field += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (c === ',' && !inQuotes) {
+        row.push(field); field = '';
+      } else if ((c === '\n' || c === '\r') && !inQuotes) {
+        if (field !== '' || row.length) { row.push(field); rows.push(row); }
+        field = ''; row = [];
+      } else {
+        field += c;
+      }
+      i++;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  async function loadSummary(){
+    const data = await fetchAdmin(`${FUNCTIONS_BASE}/admin-summary`);
+    summary.textContent = `总人数：${data.totalStudents}，已提交：${data.submittedCount}`;
+    rosterTable.innerHTML = `
+      <tr><th>学号</th><th>姓名</th><th>是否已提交</th></tr>
+      ${data.roster.map(r=>`
+        <tr>
+          <td>${r.student_id}</td>
+          <td>${r.name}</td>
+          <td>${r.submitted ? '是' : '否'}</td>
+        </tr>
+      `).join('')}
+    `;
+  }
+
+  function renderGroups(groups, score){
+    if (!groups || groups.length === 0){
+      groupsDiv.innerHTML = '<div>暂无分组结果</div>';
+      return;
+    }
+    groupsDiv.innerHTML = `
+      <div style="margin-bottom:8px;">得分：${Number(score||0).toFixed(2)}</div>
+      <div class="groups">
+        ${groups.map(g=>`
+          <div class="group">
+            <strong>第 ${g.group} 组</strong>
+            <ul>
+              ${g.members.map(m=>`<li>${m.name} (${m.student_id})</li>`).join('')}
+            </ul>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  async function loadLatest(){
+    const data = await fetchAdmin(`${FUNCTIONS_BASE}/admin-latest`);
+    renderGroups(data.groups, data.score);
+  }
+
+  document.getElementById('loginBtn').onclick = async () => {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value.trim();
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      showMsg(authMsg, '登录成功', true);
+      await loadSummary();
+      await loadLatest();
+    } catch (e) {
+      showMsg(authMsg, e.message, false);
+    }
+  };
+
+  document.getElementById('logoutBtn').onclick = async () => {
+    await supabase.auth.signOut();
+    showMsg(authMsg, '已退出', true);
+  };
+
+  document.getElementById('importBtn').onclick = async () => {
+    try {
+      const file = document.getElementById('csvFile').files[0];
+      if (!file) throw new Error('请选择CSV文件');
+      const text = await file.text();
+      let rows = parseCSV(text);
+      if (rows.length === 0) throw new Error('CSV为空');
+
+      const header = rows[0].map(x => x.toLowerCase());
+      if (header.includes('student_id') || header.includes('学号')) {
+        rows = rows.slice(1);
+      }
+
+      const students = rows.map(r => ({
+        student_id: String(r[0] || '').trim(),
+        name: String(r[1] || '').trim()
+      })).filter(s => s.student_id && s.name);
+
+      const data = await fetchAdmin(`${FUNCTIONS_BASE}/admin-import`, {
+        method: 'POST',
+        body: JSON.stringify({ students })
+      });
+
+      showMsg(msg, `导入成功，共 ${data.count} 人`, true);
+      await loadSummary();
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  };
+
+  document.getElementById('refreshBtn').onclick = async () => {
+    try {
+      await loadSummary();
+      await loadLatest();
+      showMsg(msg, '刷新成功', true);
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  };
+
+  document.getElementById('generateBtn').onclick = async () => {
+    try {
+      const data = await fetchAdmin(`${FUNCTIONS_BASE}/admin-generate`, { method: 'POST' });
+      renderGroups(data.groups, data.score);
+      showMsg(msg, '分组生成成功', true);
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  };
+
+  document.getElementById('downloadBtn').onclick = async () => {
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error('请先登录');
+      const res = await fetch(`${FUNCTIONS_BASE}/admin-export`, {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      if (!res.ok) throw new Error('下载失败');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'groups.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  };
+</script>
+</body>
+</html>

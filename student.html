@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>学生分组偏好提交</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Noto Sans SC", sans-serif; margin:0; background:#f6f7fb; color:#222;}
+    .container{max-width:720px;margin:0 auto;padding:24px;}
+    .card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);}
+    h1{font-size:22px;margin:0 0 12px;}
+    label{display:block;font-weight:600;margin:12px 0 6px;}
+    input,select,button{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #d9d9d9;font-size:14px;}
+    button{background:#2563eb;color:white;border:none;cursor:pointer;margin-top:16px;}
+    button:disabled{opacity:.6;cursor:not-allowed;}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+    .msg{margin-top:12px;padding:10px;border-radius:8px;}
+    .ok{background:#ecfdf3;color:#0f5132;border:1px solid #b7f0c2;}
+    .err{background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca;}
+    @media(max-width:640px){.row{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>分组偏好提交</h1>
+    <div class="row">
+      <div>
+        <label>学号</label>
+        <input id="studentId" placeholder="请输入学号">
+      </div>
+      <div>
+        <label>姓名</label>
+        <input id="studentName" placeholder="请输入姓名">
+      </div>
+    </div>
+
+    <label>第一志愿</label>
+    <select id="rank1"></select>
+    <label>第二志愿</label>
+    <select id="rank2"></select>
+    <label>第三志愿</label>
+    <select id="rank3"></select>
+    <label>第四志愿</label>
+    <select id="rank4"></select>
+
+    <button id="submitBtn">提交</button>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<script>
+  // ====== 配置（请替换为你的 Supabase 项目）======
+  const FUNCTIONS_BASE = "https://nwkivcfrgvesaedjqver.functions.supabase.co";
+  // ============================================
+
+  const selects = [
+    document.getElementById('rank1'),
+    document.getElementById('rank2'),
+    document.getElementById('rank3'),
+    document.getElementById('rank4'),
+  ];
+  const msg = document.getElementById('msg');
+  const submitBtn = document.getElementById('submitBtn');
+
+  function showMsg(text, ok=true){
+    msg.className = 'msg ' + (ok?'ok':'err');
+    msg.textContent = text;
+  }
+
+  async function loadStudents(){
+    const res = await fetch(`${FUNCTIONS_BASE}/get-students`);
+    const data = await res.json();
+    const students = data.students || [];
+    for(const sel of selects){
+      sel.innerHTML = '<option value="">请选择</option>' + students.map(s =>
+        `<option value="${s.student_id}">${s.name} (${s.student_id})</option>`
+      ).join('');
+    }
+  }
+
+  function validateLocal(){
+    const sid = document.getElementById('studentId').value.trim();
+    const picks = selects.map(s => s.value.trim()).filter(Boolean);
+    const set = new Set(picks);
+    if (picks.length !== 4) return '必须选择4位队友。';
+    if (set.size !== 4) return '不能重复选择同一人。';
+    if (picks.includes(sid)) return '不能选择自己。';
+    return '';
+  }
+
+  submitBtn.addEventListener('click', async () => {
+    msg.textContent = '';
+    const sid = document.getElementById('studentId').value.trim();
+    const sname = document.getElementById('studentName').value.trim();
+    const err = validateLocal();
+    if (err) return showMsg(err, false);
+
+    const payload = {
+      student_id: sid,
+      name: sname,
+      picks: [
+        { rank: 1, student_id: selects[0].value.trim() },
+        { rank: 2, student_id: selects[1].value.trim() },
+        { rank: 3, student_id: selects[2].value.trim() },
+        { rank: 4, student_id: selects[3].value.trim() },
+      ]
+    };
+
+    submitBtn.disabled = true;
+    try {
+      const res = await fetch(`${FUNCTIONS_BASE}/submit-preferences`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '提交失败');
+      showMsg('提交成功！', true);
+    } catch (e) {
+      showMsg(e.message, false);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  loadStudents();
+</script>
+</body>
+</html>
